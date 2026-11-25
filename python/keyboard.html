@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VENTUNO Q RC 키보드 조종</title>
+<style>
+  body { max-width: 34rem; margin: 3rem auto; padding: 0 1rem; font: 1rem/1.55 system-ui; }
+  form { display: flex; flex-wrap: wrap; gap: .5rem; }
+  input, button { padding: .5rem; font: inherit; }
+  output { display: block; margin: 1rem 0; font-variant-numeric: tabular-nums; }
+</style>
+<h1>RC카 키보드 조종</h1>
+<p>W/S 또는 ↑/↓ 전후진 · A/D 또는 ←/→ 조향<br>Space 정지 · Esc 조종 해제</p>
+<form id="controls">
+  <input id="code" type="password" placeholder="App Lab 조종 코드" aria-label="조종 코드" required autocomplete="off">
+  <button type="submit">조종 시작</button>
+  <button id="stop" type="button">정지 및 해제</button>
+</form>
+<p id="status" role="status">조종 해제</p>
+<output id="counts">엔코더 왼쪽 0 · 오른쪽 0</output>
+<script>
+  const aliases = new Map([
+    ['KeyW', 'forward'], ['ArrowUp', 'forward'], ['KeyS', 'reverse'], ['ArrowDown', 'reverse'],
+    ['KeyA', 'left'], ['ArrowLeft', 'left'], ['KeyD', 'right'], ['ArrowRight', 'right'],
+  ]);
+  const pressed = new Set();
+  const code = document.querySelector('#code');
+  const counts = document.querySelector('#counts');
+  const status = document.querySelector('#status');
+  let token = '', armed = false, busy = false, stopPending = false;
+
+  function disarm(message = '조종 해제') {
+    if (armed) stopPending = true;
+    armed = false;
+    pressed.clear();
+    status.textContent = message;
+    send();
+  }
+
+  async function send() {
+    if (busy || (!armed && !stopPending)) return;
+    const active = new Set([...pressed].map(key => aliases.get(key)));
+    const throttle = armed ? Number(active.has('forward')) - Number(active.has('reverse')) : 0;
+    const steer = armed ? Number(active.has('right')) - Number(active.has('left')) : 0;
+    busy = true;
+    stopPending = false;
+    try {
+      const response = await fetch('/drive', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${token}`},
+        body: JSON.stringify([throttle, steer]), signal: AbortSignal.timeout(250),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error);
+      counts.textContent = `엔코더 왼쪽 ${result.left} · 오른쪽 ${result.right}`;
+      if (armed) status.textContent = '조종 연결됨';
+    } catch (error) {
+      disarm(`조종 해제 · ${error.message}`);
+    } finally {
+      busy = false;
+      if (stopPending) send();
+    }
+  }
+
+  document.querySelector('#controls').addEventListener('submit', event => {
+    event.preventDefault();
+    if (busy || armed || !code.value.trim()) return;
+    token = code.value.trim();
+    code.value = '';
+    document.activeElement.blur();
+    armed = true;
+    status.textContent = '연결 중';
+    send();
+  });
+  document.querySelector('#stop').addEventListener('click', () => disarm());
+  window.addEventListener('keydown', event => {
+    if (!armed) return;
+    if (event.code === 'Escape' || event.code === 'Space') {
+      event.preventDefault();
+      pressed.clear();
+      if (event.code === 'Escape') disarm();
+      else send();
+      return;
+    }
+    if (aliases.has(event.code)) {
+      event.preventDefault();
+      if (event.repeat) return;
+      pressed.add(event.code);
+      send();
+    }
+  });
+  window.addEventListener('keyup', event => {
+    if (pressed.delete(event.code)) send();
+  });
+  window.addEventListener('blur', () => disarm());
+  window.addEventListener('pagehide', () => disarm());
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) disarm();
+  });
+  setInterval(send, 75);
+</script>
+</html>
